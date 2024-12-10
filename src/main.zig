@@ -21,10 +21,65 @@ const Db = struct {
 var err_str: ?rocks.Data = null;
 
 pub fn main() !void {
+    try simple();
+}
+
+pub fn simple() !void {
     var args = try std.process.argsWithAllocator(allocator);
     defer args.deinit();
 
-    const path = "src/repro/blockstore";
+    const path = "data";
+
+    if (config.freshDb) {
+        if (std.fs.cwd().access(path, .{})) |_| {
+            try std.fs.cwd().deleteTree(path);
+        } else |_| {}
+        try std.fs.cwd().makePath(path);
+    }
+
+    var db: Db = try open(allocator, path);
+
+    const delete_start = [_]u8{ 182, 28, 212, 119 };
+    const delete_end = [_]u8{ 190, 147, 84, 76 };
+    const get = [_]u8{ 61, 84, 191, 167, 182, 191, 187, 206 };
+
+    var batch = db.initWriteBatch();
+    batch.deleteRange(db.cf_handle, &delete_start, &delete_end);
+    try db.db.write(batch, &err_str);
+
+    _ = try db.db.get(db.cf_handle, &get, &err_str);
+}
+
+pub fn singleThreaded() !void {
+    var args = try std.process.argsWithAllocator(allocator);
+    defer args.deinit();
+
+    const path = "data";
+
+    if (config.freshDb) {
+        if (std.fs.cwd().access(path, .{})) |_| {
+            try std.fs.cwd().deleteTree(path);
+        } else |_| {}
+        try std.fs.cwd().makePath(path);
+    }
+
+    var db: Db = try open(allocator, path);
+
+    var rng = std.rand.DefaultPrng.init(1234);
+    const random = rng.random();
+
+    while (true) {
+        try write(&db, random);
+        try delete(&db, random);
+        try read(&db, random);
+    }
+}
+
+pub fn parallel() !void {
+    var args = try std.process.argsWithAllocator(allocator);
+    defer args.deinit();
+
+    const path = "data";
 
     if (config.freshDb) {
         if (std.fs.cwd().access(path, .{})) |_| {
@@ -84,63 +139,75 @@ pub fn open(allocator_: std.mem.Allocator, path_: []const u8) !Db {
 fn writer(db_: *Db) !void {
     var rng = std.rand.DefaultPrng.init(1234);
     while (true) {
-        var index_buffer: [8]u8 = undefined;
-        for (0..index_buffer.len) |i| {
-            index_buffer[i] = @intCast(rng.random().int(u8));
-        }
-        const index: []const u8 = index_buffer[0..];
-
-        var buffer: [61]u8 = undefined;
-
-        // Fill the buffer with random bytes
-        for (0..buffer.len) |i| {
-            buffer[i] = @intCast(rng.random().int(u8));
-        }
-
-        const slice: []const u8 = buffer[0..];
-        try rocks.DB.put(&db_.db, db_.cf_handle, index, slice, &err_str);
-        std.debug.print("Wrote random data\n", .{});
+        try write(db_, rng.random());
     }
 }
 
 fn deleter(db_: *Db) !void {
     var rng = std.rand.DefaultPrng.init(123);
     while (true) {
-        const start = rng.random().int(u32);
-        const end = blk: {
-            const end_ = rng.random().int(u32);
-            if (end_ < start)
-                break :blk (end_ +| start)
-            else
-                break :blk end_;
-        };
-        var batch = db_.initWriteBatch();
-        defer batch.deinit();
-        // std.debug.print("Deleting. Start:{} End: {}\n", .{ start, end });
-        var start_buffer: [4]u8 = undefined;
-        var end_buffer: [4]u8 = undefined;
-        std.mem.writeInt(u32, &start_buffer, start, .big);
-        std.mem.writeInt(u32, &end_buffer, end, .big);
-        batch.deleteRange(db_.cf_handle, &start_buffer, &end_buffer);
-        try rocks.DB.write(&db_.db, batch, &err_str);
-        // std.debug.print("Deleted. Start:{} End: {}\n", .{ start, end });
+        try delete(db_, rng.random());
     }
 }
 
 fn reader(db_: *Db) !void {
     var rng = std.rand.DefaultPrng.init(12345);
     while (true) {
-        var index_buffer: [8]u8 = undefined;
-        for (0..index_buffer.len) |i| {
-            index_buffer[i] = @intCast(rng.random().int(u8));
-        }
-        const index: []const u8 = index_buffer[0..];
+        try read(db_, rng.random());
+    }
+}
 
-        const read = try rocks.DB.get(&db_.db, db_.cf_handle, index, &err_str);
-        if (read) |_| {
-            // std.debug.print("Read key {}\n", .{index});
-        } else {
-            // std.debug.print("Did not read deleted key {}\n", .{index});
-        }
+fn write(db_: *Db, random: std.Random) !void {
+    var index_buffer: [8]u8 = undefined;
+    for (0..index_buffer.len) |i| {
+        index_buffer[i] = @intCast(random.int(u8));
+    }
+    const index: []const u8 = index_buffer[0..];
+
+    var buffer: [61]u8 = undefined;
+
+    // Fill the buffer with random bytes
+    for (0..buffer.len) |i| {
+        buffer[i] = @intCast(random.int(u8));
+    }
+
+    const slice: []const u8 = buffer[0..];
+    try rocks.DB.put(&db_.db, db_.cf_handle, index, slice, &err_str);
+    std.debug.print("Wrote random data\n", .{});
+}
+
+fn delete(db_: *Db, random: std.Random) !void {
+    const start = random.int(u32);
+    const end = blk: {
+        const end_ = random.int(u32);
+        if (end_ < start)
+            break :blk (end_ +| start)
+        else
+            break :blk end_;
+    };
+    var batch = db_.initWriteBatch();
+    defer batch.deinit();
+    // std.debug.print("Deleting. Start:{} End: {}\n", .{ start, end });
+    var start_buffer: [4]u8 = undefined;
+    var end_buffer: [4]u8 = undefined;
+    std.mem.writeInt(u32, &start_buffer, start, .big);
+    std.mem.writeInt(u32, &end_buffer, end, .big);
+    batch.deleteRange(db_.cf_handle, &start_buffer, &end_buffer);
+    try rocks.DB.write(&db_.db, batch, &err_str);
+    // std.debug.print("Deleted. Start:{} End: {}\n", .{ start, end });
+}
+
+fn read(db_: *Db, random: std.Random) !void {
+    var index_buffer: [8]u8 = undefined;
+    for (0..index_buffer.len) |i| {
+        index_buffer[i] = @intCast(random.int(u8));
+    }
+    const index: []const u8 = index_buffer[0..];
+
+    const the_read = try rocks.DB.get(&db_.db, db_.cf_handle, index, &err_str);
+    if (the_read) |_| {
+        // std.debug.print("Read key {}\n", .{index});
+    } else {
+        // std.debug.print("Did not read deleted key {}\n", .{index});
     }
 }
