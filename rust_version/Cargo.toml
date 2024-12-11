@@ -3,5 +3,7 @@ name = "rust_rocksdb_segfault"
 version = "0.1.0"
 edition = "2021"
 
-[dependencies]
-rust-rocksdb = "0.34.0"
+[dependencies.rocksdb]
+version = "0.22.0"
+default-features = false
+features = ["lz4"]

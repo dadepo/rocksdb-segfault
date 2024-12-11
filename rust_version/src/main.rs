@@ -1,4 +1,4 @@
-use rust_rocksdb::{ColumnFamilyDescriptor, Options, WriteBatch, DB};
+use rocksdb::{ColumnFamilyDescriptor, Options, WriteBatch, DB};
 use std::error::Error;
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -23,10 +23,9 @@ fn main() -> Result<(), Box<dyn Error>> {
 
     db.write(batch)?;
 
-    if let Some(value) = db.get_cf(cf_handle, &get_key)? {
-        println!("Retrieved value: {:?}", value);
-    } else {
-        println!("Key not found");
+    match db.get_cf(cf_handle, &get_key)? {
+        Some(value) => println!("Retrieved value: {:?}", value),
+        None => println!("Key not found"),
     }
 
     Ok(())
